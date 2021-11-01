@@ -20,3 +20,10 @@ $ TEST_ZONE_NAME=example.com. make test
 
 The example file has a number of areas you must fill in and replace with your
 own options in order for tests to pass.
+
+## Links
+
+- https://cert-manager.io/docs/configuration/acme/dns01/webhook/
+- https://github.com/cert-manager/webhook-example
+- https://github.com/lordofsystem/cert-manager-webhook-powerdns
+- https://github.com/kubernetes-sigs/external-dns/blob/b03da005e217b2a0a5da098cb6cd669372a89799/provider/coredns/coredns.go
