@@ -1,16 +1,21 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
+	"time"
 
-	extapi "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
-	//"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-
+	// "k8s.io/client-go/kubernetes"
 	"github.com/jetstack/cert-manager/pkg/acme/webhook/apis/acme/v1alpha1"
 	"github.com/jetstack/cert-manager/pkg/acme/webhook/cmd"
+	etcdcv3 "go.etcd.io/etcd/client/v3"
+	extapi "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/external-dns/endpoint"
+	"sigs.k8s.io/external-dns/provider/coredns"
 )
 
 var GroupName = os.Getenv("GROUP_NAME")
@@ -26,15 +31,15 @@ func main() {
 	// webhook, where the Name() method will be used to disambiguate between
 	// the different implementations.
 	cmd.RunWebhookServer(GroupName,
-		&customDNSProviderSolver{},
+		&coreDNSEtcdProviderSolver{},
 	)
 }
 
-// customDNSProviderSolver implements the provider-specific logic needed to
+// coreDNSEtcdProviderSolver implements the provider-specific logic needed to
 // 'present' an ACME challenge TXT record for your own DNS provider.
 // To do so, it must implement the `github.com/jetstack/cert-manager/pkg/acme/webhook.Solver`
 // interface.
-type customDNSProviderSolver struct {
+type coreDNSEtcdProviderSolver struct {
 	// If a Kubernetes 'clientset' is needed, you must:
 	// 1. uncomment the additional `client` field in this structure below
 	// 2. uncomment the "k8s.io/client-go/kubernetes" import at the top of the file
@@ -42,9 +47,10 @@ type customDNSProviderSolver struct {
 	// 4. ensure your webhook's service account has the required RBAC role
 	//    assigned to it for interacting with the Kubernetes APIs you need.
 	//client kubernetes.Clientset
+	etcdClient *etcdcv3.Client
 }
 
-// customDNSProviderConfig is a structure that is used to decode into when
+// coreDNSEtcdProviderConfig is a structure that is used to decode into when
 // solving a DNS01 challenge.
 // This information is provided by cert-manager, and may be a reference to
 // additional configuration that's needed to solve the challenge for this
@@ -58,14 +64,25 @@ type customDNSProviderSolver struct {
 // You should not include sensitive information here. If credentials need to
 // be used by your provider here, you should reference a Kubernetes Secret
 // resource and fetch these credentials using a Kubernetes clientset.
-type customDNSProviderConfig struct {
+type coreDNSEtcdProviderConfig struct {
 	// Change the two fields below according to the format of the configuration
 	// to be decoded.
 	// These fields will be set by users in the
 	// `issuer.spec.acme.dns01.providers.webhook.config` field.
 
+	EtcdEndpoint  string `json:"etcdEndpoint"`
+	CoreDNSPrefix string `json:"coreDNSPrefix"`
 	//Email           string `json:"email"`
 	//APIKeySecretRef v1alpha1.SecretKeySelector `json:"apiKeySecretRef"`
+}
+
+func (c *coreDNSEtcdProviderSolver) NewEtcdClient() (err error) {
+	etcdClientConfig := &etcdcv3.Config{Endpoints: []string{cfg.EtcdEndpoint}}
+	c.etcdClient, err = etcdcv3.New(*etcdClientConfig)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // Name is used as the name for this DNS solver when referencing it on the ACME
@@ -74,8 +91,8 @@ type customDNSProviderConfig struct {
 // solvers configured with the same Name() **so long as they do not co-exist
 // within a single webhook deployment**.
 // For example, `cloudflare` may be used as the name of a solver.
-func (c *customDNSProviderSolver) Name() string {
-	return "my-custom-solver"
+func (c *coreDNSEtcdProviderSolver) Name() string {
+	return "coredns-etcd"
 }
 
 // Present is responsible for actually presenting the DNS record with the
@@ -83,16 +100,32 @@ func (c *customDNSProviderSolver) Name() string {
 // This method should tolerate being called multiple times with the same value.
 // cert-manager itself will later perform a self check to ensure that the
 // solver has correctly configured the DNS provider.
-func (c *customDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error {
+func (c *coreDNSEtcdProviderSolver) Present(ch *v1alpha1.ChallengeRequest) (err error) {
 	cfg, err := loadConfig(ch.Config)
 	if err != nil {
 		return err
 	}
-
-	// TODO: do something more useful with the decoded configuration
 	fmt.Printf("Decoded configuration %v", cfg)
 
-	// TODO: add code that sets a record in the DNS provider's console
+	c.NewEtcdClient()
+	defer c.etcdClient.Close()
+	ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
+	defer cancel()
+
+	value, err := json.Marshal(coredns.Service{
+		Host: ch.ResolvedFQDN,
+		Key:  ch.Key,
+		TTL:  uint32(60),
+	})
+	if err != nil {
+		return err
+	}
+	key := cfg.etcdKeyFor(ch.Key)
+	_, err = c.etcdClient.Put(ctx, key, string(value))
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -102,8 +135,25 @@ func (c *customDNSProviderSolver) Present(ch *v1alpha1.ChallengeRequest) error {
 // value provided on the ChallengeRequest should be cleaned up.
 // This is in order to facilitate multiple DNS validations for the same domain
 // concurrently.
-func (c *customDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error {
+func (c *coreDNSEtcdProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) (err error) {
 	// TODO: add code that deletes a record from the DNS provider's console
+	c.NewEtcdClient()
+	defer c.etcdClient.Close()
+
+	cfg, err := loadConfig(ch.Config)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Decoded configuration %v", cfg)
+
+	c.NewEtcdClient()
+	defer c.etcdClient.Close()
+	ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
+	defer cancel()
+
+	key := cfg.etcdKeyFor(ch.Key)
+	_, err = c.etcdClient.Delete(ctx, key, etcdcv3.WithPrefix())
+
 	return nil
 }
 
@@ -116,7 +166,7 @@ func (c *customDNSProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error {
 // provider accounts.
 // The stopCh can be used to handle early termination of the webhook, in cases
 // where a SIGTERM or similar signal is sent to the webhook process.
-func (c *customDNSProviderSolver) Initialize(kubeClientConfig *rest.Config, stopCh <-chan struct{}) error {
+func (c *coreDNSEtcdProviderSolver) Initialize(kubeClientConfig *rest.Config, stopCh <-chan struct{}) error {
 	///// UNCOMMENT THE BELOW CODE TO MAKE A KUBERNETES CLIENTSET AVAILABLE TO
 	///// YOUR CUSTOM DNS PROVIDER
 
@@ -133,8 +183,8 @@ func (c *customDNSProviderSolver) Initialize(kubeClientConfig *rest.Config, stop
 
 // loadConfig is a small helper function that decodes JSON configuration into
 // the typed config struct.
-func loadConfig(cfgJSON *extapi.JSON) (customDNSProviderConfig, error) {
-	cfg := customDNSProviderConfig{}
+func loadConfig(cfgJSON *extapi.JSON) (coreDNSEtcdProviderConfig, error) {
+	cfg := coreDNSEtcdProviderConfig{}
 	// handle the 'base case' where no configuration has been provided
 	if cfgJSON == nil {
 		return cfg, nil
@@ -143,5 +193,29 @@ func loadConfig(cfgJSON *extapi.JSON) (customDNSProviderConfig, error) {
 		return cfg, fmt.Errorf("error decoding solver config: %v", err)
 	}
 
+	if cfg.EtcdEndpoint == "" {
+		cfg.EtcdEndpoint = "http://localhost:2379"
+	}
+	if cfg.CoreDNSPrefix == "" {
+		cfg.CoreDNSPrefix = "/skydns/"
+	}
+
 	return cfg, nil
+}
+
+// Reverses a string array
+// from https://github.com/kubernetes-sigs/external-dns/blob/b03da005e217b2a0a5da098cb6cd669372a89799/provider/coredns/coredns.go#L467
+func reverse(slice []string) {
+	for i := 0; i < len(slice)/2; i++ {
+		j := len(slice) - i - 1
+		slice[i], slice[j] = slice[j], slice[i]
+	}
+}
+
+// Returns the etcd key path for a record
+// from https://github.com/kubernetes-sigs/external-dns/blob/b03da005e217b2a0a5da098cb6cd669372a89799/provider/coredns/coredns.go#L454
+func (c coreDNSEtcdProviderConfig) etcdKeyFor(dnsName string) string {
+	domains := strings.Split(dnsName, ".")
+	reverse(domains)
+	return c.CoreDNSPrefix + strings.Join(domains, "/")
 }
