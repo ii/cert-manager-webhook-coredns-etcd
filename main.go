@@ -12,10 +12,8 @@ import (
 	"github.com/jetstack/cert-manager/pkg/acme/webhook/apis/acme/v1alpha1"
 	"github.com/jetstack/cert-manager/pkg/acme/webhook/cmd"
 	etcdcv3 "go.etcd.io/etcd/client/v3"
-	extapi "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
+	extapi "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/client-go/rest"
-	"sigs.k8s.io/external-dns/endpoint"
-	"sigs.k8s.io/external-dns/provider/coredns"
 )
 
 var GroupName = os.Getenv("GROUP_NAME")
@@ -33,6 +31,13 @@ func main() {
 	cmd.RunWebhookServer(GroupName,
 		&coreDNSEtcdProviderSolver{},
 	)
+}
+
+type Service struct {
+	Host string `json:"host,omitempty"`
+	Key  string `json:"key,omitempty"`
+	TTL  uint32 `json:"ttl,omitempty"`
+	Text string `json:"text,omitempty"`
 }
 
 // coreDNSEtcdProviderSolver implements the provider-specific logic needed to
@@ -76,7 +81,7 @@ type coreDNSEtcdProviderConfig struct {
 	//APIKeySecretRef v1alpha1.SecretKeySelector `json:"apiKeySecretRef"`
 }
 
-func (c *coreDNSEtcdProviderSolver) NewEtcdClient() (err error) {
+func (c *coreDNSEtcdProviderSolver) NewEtcdClient(cfg coreDNSEtcdProviderConfig) (err error) {
 	etcdClientConfig := &etcdcv3.Config{Endpoints: []string{cfg.EtcdEndpoint}}
 	c.etcdClient, err = etcdcv3.New(*etcdClientConfig)
 	if err != nil {
@@ -107,12 +112,12 @@ func (c *coreDNSEtcdProviderSolver) Present(ch *v1alpha1.ChallengeRequest) (err 
 	}
 	fmt.Printf("Decoded configuration %v", cfg)
 
-	c.NewEtcdClient()
+	c.NewEtcdClient(cfg)
 	defer c.etcdClient.Close()
 	ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
 	defer cancel()
 
-	value, err := json.Marshal(coredns.Service{
+	value, err := json.Marshal(Service{
 		Host: ch.ResolvedFQDN,
 		Key:  ch.Key,
 		TTL:  uint32(60),
@@ -137,16 +142,13 @@ func (c *coreDNSEtcdProviderSolver) Present(ch *v1alpha1.ChallengeRequest) (err 
 // concurrently.
 func (c *coreDNSEtcdProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) (err error) {
 	// TODO: add code that deletes a record from the DNS provider's console
-	c.NewEtcdClient()
-	defer c.etcdClient.Close()
-
 	cfg, err := loadConfig(ch.Config)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("Decoded configuration %v", cfg)
 
-	c.NewEtcdClient()
+	c.NewEtcdClient(cfg)
 	defer c.etcdClient.Close()
 	ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
 	defer cancel()
