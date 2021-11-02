@@ -1,0 +1,29 @@
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: ${GIT_AUTHOR_EMAIL}
+    privateKeySecretRef:
+      name: letsencrypt-staging
+    solvers:
+      - dns01:
+          webhook:
+            groupName: ${SHARINGIO_PAIR_BASE_DNS_NAME}
+            solverName: coredns-etcd
+            config:
+              etcdEndpoint: http://etcd-client.pair-system:2379
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: example-cert
+spec:
+  dnsNames:
+    - test.${SHARINGIO_PAIR_BASE_DNS_NAME}
+  issuerRef:
+    name: letsencrypt-staging
+    kind: ClusterIssuer
+  secretName: example-cert
