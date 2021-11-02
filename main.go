@@ -23,6 +23,8 @@ func main() {
 		panic("GROUP_NAME must be specified")
 	}
 
+	fmt.Printf("Launching cert-manager-webhook-coredns-etcd...\n")
+
 	// This will register our custom DNS provider with the webhook serving
 	// library, making it available as an API under the provided GroupName.
 	// You can register multiple DNS provider implementations with a single
@@ -106,6 +108,7 @@ func (c *coreDNSEtcdProviderSolver) Name() string {
 // cert-manager itself will later perform a self check to ensure that the
 // solver has correctly configured the DNS provider.
 func (c *coreDNSEtcdProviderSolver) Present(ch *v1alpha1.ChallengeRequest) (err error) {
+	fmt.Printf("Presenting a TXT record for dns01\n")
 	cfg, err := loadConfig(ch.Config)
 	if err != nil {
 		return err
@@ -141,7 +144,7 @@ func (c *coreDNSEtcdProviderSolver) Present(ch *v1alpha1.ChallengeRequest) (err 
 // This is in order to facilitate multiple DNS validations for the same domain
 // concurrently.
 func (c *coreDNSEtcdProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) (err error) {
-	// TODO: add code that deletes a record from the DNS provider's console
+	fmt.Printf("Cleaning up a TXT record for dns01\n")
 	cfg, err := loadConfig(ch.Config)
 	if err != nil {
 		return err
@@ -171,6 +174,7 @@ func (c *coreDNSEtcdProviderSolver) CleanUp(ch *v1alpha1.ChallengeRequest) (err 
 func (c *coreDNSEtcdProviderSolver) Initialize(kubeClientConfig *rest.Config, stopCh <-chan struct{}) error {
 	///// UNCOMMENT THE BELOW CODE TO MAKE A KUBERNETES CLIENTSET AVAILABLE TO
 	///// YOUR CUSTOM DNS PROVIDER
+	fmt.Printf("Initializing...")
 
 	//cl, err := kubernetes.NewForConfig(kubeClientConfig)
 	//if err != nil {
